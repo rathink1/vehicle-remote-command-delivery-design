@@ -45,12 +45,11 @@ This system has two halves with opposite personalities:
 	- Cars IP address also changes as it drives between cell towers.
 
 	So the car has to open a connection to our system, which our system can then use for
-command delivery to the car.
-<br>  
+command delivery to the car.\
 There are ways to do this connection: polling, WebSocket, MQTT(AWS IoT Core/self-hosted broker), gRPC stream, NATS cluster; each with its own trade-offs.
-<br>  
+
 **NOTE** : For sake of simplicity, we are gonna assume, cars connect to our **already existing NATS cluster**. This system, which we are designing is also its client. We discuss the reasons in more detail in Architecture Decision Record (refer ADR-4).
-<br>  
+
 So the delivery path hands each command to NATS cluster, which finds the car's connection. Our systems job is everything around that: **correctness**: keep the command safe until the car answers, survive drops and crashes, and stop retrying once the command expires.
 <br><br>
 
@@ -63,6 +62,7 @@ So the delivery path hands each command to NATS cluster, which finds the car's c
 | State        | stateless                                          | NATS finds the car's connection; our system tracks each command's status |
 | Failure rule | never lose a command: refuse (503) rather than lie | retry: resend command until acked by the car, or expires                 |
 | Scales with  | how often the users tap                            | how many commands are in flight (NATS scales with online cars)           |
+
 Opposite personalities : The accept path is a fast, stateless promise. The delivery path is slow, stateful and patient. Our system needs to be split into micro-services so that each can scale and fail on its own terms.
 
 <br>
@@ -141,7 +141,7 @@ We have to aim for at-least-once delivery of commands plus idempotent processing
 ## Back-of-envelope numbers
 
 **Assumptions/Constraints :**
-- Number of cars : max. 1 million connected cars within first 10 years. 
+- Number of cars : max. 1 million connected cars within first 10 years.
 - Online cars at peak : 50%, so 500,000 concurrent connections to an already running NATS cluster under platform team. Parked cars sleep and disconnect.
 - Number of commands : 4 per car per day on average, with a 10× peak in the morning pre-conditioning window.
 - Command record size :
@@ -155,7 +155,7 @@ We have to aim for at-least-once delivery of commands plus idempotent processing
     - failureReason (optional)  
 
   Total size ~ 1 KB
-<br><br>
+<br>
 
 | Quantity                | Calculation                                                                                                           | Result                                                |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
@@ -167,6 +167,7 @@ We have to aim for at-least-once delivery of commands plus idempotent processing
 | Connections NATS holds  | 50% of 1,000,000 cars online at peak                                                                                  | 500,000, held by the NATS cluster                     |
 | NATS keepalive pings    | 500,000 ÷ one ping per 60s                                                                                            | ~8,300 tiny packets/s, sent by NATS, answered by cars |
 | Reconnect churn         | 500,000 ÷ one reconnect per 10 min per car (tunnels, cell handovers)                                                  | ~830 connects/s                                       |
+
 Every rate here is small. A few hundred commands a second, plus tiny keep-alive pings. The big number is half a million connections that has to stay open for hours. So the hard problems are holding those connections (which NATS does for us) and staying **correct** when connections and servers fail.
 
 Things worth noting here:
@@ -436,6 +437,7 @@ Requiring conditionExpression `status = PENDING` means a finished command is nev
 | 3   | A read that sees a write made a moment earlier (Read-your-writes)          | The app reads the status right after its `POST`. A `404` at that moment looks like a bug.                                                                                                        | F6                 |
 | 4   | A fast lookup of one car's open commands, oldest first                     | Replay-on-reconnect sends a car's open commands in the order they were accepted.                                                                                                                 | F2, F3             |
 | 5   | No accepted command lost if one availability zone fails                    | A `202` is a promise to be kept.                                                                                                                                                                 | N4, N6             |
+
 Nice to haves :
 - a cheap query for "what expires this minute"
 - automatic deletion after 30 days
@@ -521,6 +523,7 @@ The API writes this item and the command in one `TransactWriteItems` call, with 
 | SQS standard              | The same queue model, without message groups.                                                                                                                           | - Simplest, with the highest throughput<br>                                                                                                                                                          | - No order: "lock" then "unlock" could go out reversed (breaks F3)<br>- Retries make it worse: a timed-out Lock can come back after the Unlock went through<br>- Can deliver a job twice, so it leans even harder on dedupe                                                                                                                                                     |
 | Kafka (MSK)               | A topic partitioned by VIN; each worker reads its partitions in order.                                                                                                  | - Ordered per partition<br>- Replayable history for other consumers<br>- Built for high-volume streams such as telemetry                                                                             | - No per-message retry timer: one silent car blocks its whole partition<br>- Overkill: you size the brokers, storage and partitions and pay for them every hour, busy or idle, for only ~460 jobs a second. SQS needs no sizing and bills per request<br>- Committed offsets make retrying one job difficult                                                                    |
 | NATS JetStream work queue | A NATS stream keeps each job until a worker acknowledges it. A negative acknowledgement with a delay schedules the retry.                                               | - Everything stays in NATS<br>- Delayed redelivery and deduplication built-in                                                                                                                        | - Per-car order means splitting the stream into partitions (say 64, by VIN hash), and then one silent car stalls every car in its partition. SQS FIFO holds back only that one car<br>- NATS queue becomes durable state (disk, replicated stream) on the platform team's cluster: more to size, back up and upgrade, and one NATS outage stops both the queue and delivery<br> |
+
 <br>**Q. Why SQS FIFO chosen**
 - **Per-car order, with every car in parallel (the deciding reason).** The VIN is the message group, so each car has one job in flight and its commands go out in order (F3), while all cars run side by side. Standard SQS has no order, Kafka and JetStream order per partition, so one silent car would stall many.
 - **Retries for free.** The 30s visibility timeout hands back any job the worker did not delete, meaning no retry scheduler to build.
@@ -679,6 +682,7 @@ Even though this is not in this design, its good to understand various options t
 | MQTT (via AWS IoT Core or a self-hosted broker) | The car connects to an MQTT broker with its device certificate and subscribes to vehicles/{vin}/commands. Our backend publishes to that topic and broker delivers it.                                                                                                                                                                       | - Industry default for connected cars: an open protocol many brokers speak<br><br>- Built for IoT: tiny packets, works on weak networks<br><br>- At-least-once delivery (QoS 1) and sessions that survive short drops, out of the box<br><br>- Per-device certificates included<br><br>- No routing problem: broker delivers to each car by its topic, so we never track which server holds which car | - IoT Core : AWS lock-in baked into car firmware<br><br>- Less control over connections (draining, tuning)<br><br>- Billed per connection-minute and per message, so cost grows with the fleet size<br><br><br><br>- Self-hosted: free editions of popular brokers such as EMQX and HiveMQ do not cluster<br><br>- QoS 1 only means the car's MQTT client got the command; we still build acks, dedup and command expiry<br><br>- Topic and payload conventions are ours to invent and version<br> |
 | gRPC stream                                     | The car opens one HTTP/2 connection to our gateway and keeps a bidirectional stream open. Either side can send a Protobuf message at any time. Our gateway pods hold the streams.                                                                                                                                                           | - Typed Protobuf contracts: the compiler catches a field the car and cloud disagree on<br><br>- One contract end to end: the same `.proto` files for car, gateway and backend services<br><br>- Full control: drain pods, rebalance, tune keep-alive per car<br><br>- Built-in flow control: a slow car cannot flood a pod                                                                            | - We build and run the gateway: pods, presence, routing<br><br>- Long-lived connections never rebalance on their own; we need maxConnectionAge<br><br>- Load balancers need care with HTTP/2 and idle timeouts<br><br>- Heavier than MQTT for very small, battery-limited devices                                                                                                                                                                                                                  |
 | **NATS (used in this design)**<br><br><br>      | The car connects to the NATS cluster with its own certificate and subscribes to vehicles.{vin}.commands. The worker sends a request there, and the car's reply is the result.<br><br>NATS server pings each client every ping interval (default 2 minutes) to keep the connection alive and closes the connection after 2 unanswered pings. | - Request-reply built in: the reply is the result, so no separate ack topic or ack pipeline<br><br>- An instant "no responders" when the car is offline: presence for free<br><br>- Open source: no cloud vendor in the firmware<br><br>- No routing problem: the cluster delivers to each car by subject                                                                                             | - Core NATS is at most once: nothing is kept for an offline car, so durability and retries are ours (DynamoDB, SQS)<br><br>- Not the MQTT standard: every car needs a NATS client<br><br>- Its MQTT support is 3.1.1 only, so MQTT 5 cars could not join as they are<br><br>- A cluster someone must run, upgrade and size: the platform team's load, not zero                                                                                                                                     |
+
 <br>**Q. Why choose NATS over MQTT, the industry default?**\
 MQTT (self-hosted) is the usual choice for connected cars, and it could also work here. With NATS, request-reply returns the car's result as the reply, which removes the ack topic, the ack rule and the ack queue. And "no responders" tells us at once that a car is offline. What NATS does not do is our correctness work: core NATS keeps nothing for an absent car, so our Database has to hold every command, SQS retries, and the car dedupes.
 Avoid MQTT via AWS IoT Core, due to vendor lock-in at car firmware level.
@@ -726,6 +730,7 @@ Every failure below ends the same way: the command either waits safely in Dynamo
 | DynamoDB down or throttled                                        | `POST` returns `503`; nothing is sent without a claim                                                         | No promise was made                                                                                                     | 5xx rate; claim errors                         |
 | The same command sent twice (retry, sweeper, replay-on-reconnect) | The car receives it twice                                                                                     | The car dedups by commandId                                                                                             | Duplicate results per second                   |
 | A command crashes the car's  firmware (on TCU)                    | No reply; the worker retries retries until the deadline, then stops                                           | The expiry job marks it `TIMED_OUT` instead of resending forever                                                        | `TIMED_OUT` share per firmware version         |
+
 
 <br>**Q. How big must the car's dedupe list be?**\
 The server never sends an expired command, because the claim rejects it. So the car only needs to remember a command id until that command's `expiresAt` has passed. 
