@@ -1,4 +1,7 @@
-Designed with love, especially for RV Tech Connectivity Team.
+# Vehicle Remote Command Delivery C2D Design
+
+A design problem I solved for my recent client's Connectivity Team. This is a sample of my work done there, not the complete thing.
+
 ## Problem statement in one line 
 
 A cloud-to-device (C2D) command delivery system : Accept remote command for a car from a user mobile app and deliver it to that specific car exactly once in effect, in order, and only while it is still valid, even when the car's network is flaky or, our own system crashes.
