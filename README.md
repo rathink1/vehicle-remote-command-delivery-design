@@ -1,6 +1,6 @@
 # Vehicle Remote Command Delivery C2D Design
 
-A design problem I solved for my recent client's Connectivity Team. This is a sample of my work done there, not the complete thing.
+This is a sample of my system design + Architecture Design Record work that I have written, especially for this role, for how I'd approach vehicle remote commands delivery to cars over the cloud.
 
 ## Problem statement in one line 
 
